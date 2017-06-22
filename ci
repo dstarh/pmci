@@ -1,5 +1,5 @@
 #!/bin/bash
-
+JAVA_HOME=`/usr/libexec/java_home -v 1.8`
 if [ "$EMAIL" = "" ]
 then
   echo "Please set EMAIL"
@@ -23,8 +23,9 @@ mkdir -p "$working_folder"
 while [ 1 ]; do
   for branch in $@
   do
-    log_file="$working_folder/$branch.log"
-    gems_file="$working_folder/$branch_gems.log"
+    underscored_branch=${branch//\//_}    
+    log_file="$working_folder/$underscored_branch.log"
+    
     # -d Remove untracked directories in addition to untracked files.
     git clean -d --force
     # in case this is the first time we're seeing this branch
@@ -33,41 +34,18 @@ while [ 1 ]; do
     git checkout --track origin/$branch
     git checkout $branch
     git fetch origin
-    git ls-remote . | grep "heads/$branch$" | awk '{print $1}' > $working_folder/$branch-heads.hash
-    git ls-remote . | grep "origin/$branch$" | awk '{print $1}' > $working_folder/$branch-origin.hash
-    DIFF=`diff $working_folder/$branch-heads.hash $working_folder/$branch-origin.hash`
+    git ls-remote . | grep "heads/$branch$" | awk '{print $1}' > $working_folder/$underscored_branch-heads.hash
+    git ls-remote . | grep "origin/$branch$" | awk '{print $1}' > $working_folder/$underscored_branch-origin.hash
+    DIFF=`diff $working_folder/$underscored_branch-heads.hash $working_folder/$underscored_branch-origin.hash`
     if [ "" != "$DIFF" ]; then
       # --hard Any changes to tracked files in the working tree discarded.
       git reset --hard origin/$branch > $log_file 2>&1
-      comment=`git log --oneline -1`
-      bundle install > $gems_file 2>&1
-      RAILS_ENV=test bundle exec rake db:migrate --trace >> $log_file 2>&1
-      # gem 'minitest-profile' # required for --profile
-      TESTOPTS='--profile' RAILS_ENV=test bundle exec rake test --verbose >> $log_file 2>&1
-      # append the bundle install output AFTER the test data
-      cat $gems_file >> $log_file 2>&1
-      # why do we do this twice? to note anything that was "dirtied" into the log
-      git reset --hard >> $log_file 2>&1
-      ERRORS_COUNT=`egrep '(Failure|Error):$' $log_file | wc -l`
-      FINISHED_IN=`grep 'Finished in' $log_file | wc -l`
-      if [ "$FINISHED_IN" -ne "1" ]; then
-        ERRORS_COUNT="911"
-      fi
+      comment=`git log --oneline -1`      
+      ant run-unit-tests >> $log_file 2>&1
+      ERRORS_COUNT=`egrep 'FAILED:' $log_file | wc -l`      
       headline="$ERRORS_COUNT tests failed for $repository_name $branch $comment"
-      cat $log_file | perl -pe 's/\x1b\[[0-9;]*[mG]//g' | mail -s "$headline" $EMAIL
-      if [ "$ERRORS_COUNT" -ne "0" ]; then
-        if [ -z "$SLACKBOT_URL" ]; then
-          echo "Please set SLACKBOT_URL so the Slack channel can be notified."
-        else
-          curl -X POST --data-urlencode "payload={\"channel\": \"#general\", \"username\": \"CI\", \"text\": \"$headline\", \"icon_emoji\": \":warning:\"}" "https://hooks.slack.com/services/$SLACKBOT_URL"
-        fi
-      fi
-      rm log/test.log
-
-      bundle exec brakeman -o brakeman.html 2> brakeman.log
-      cat brakeman.html | mail -s "$(echo -e "Brakeman report for $repository_name $branch $comment\nContent-Type: text/html")" $EMAIL
-      rm brakeman.*
-
+      tail -n 200 $log_file | mail -s "$headline" $EMAIL
+      
     else
       echo NO CHANGES YET
     fi
